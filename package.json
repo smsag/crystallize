@@ -1,76 +1,87 @@
 {
-  "name": "copilot-chat-saver",
-  "displayName": "Copilot Chat Saver",
-  "description": "Automatically saves all GitHub Copilot and Claude Code chat sessions (including thinking/reasoning) as Markdown files in your workspace. 100% local, no telemetry, no network.",
-  "version": "1.0.1",
-  "publisher": "dwalter",
+  "name": "crystallize",
+  "displayName": "Crystallize",
+  "description": "Crystallize your Copilot conversations into lasting knowledge - summarized by AI, saved as Markdown.",
+  "version": "0.1.0",
+  "publisher": "smsag",
   "license": "MIT",
-  "icon": "images/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dwalter/copilot-chat-saver"
+    "url": "https://github.com/smsag/crystallize.git"
   },
-  "sponsor": {
-    "url": "https://shinygen.ai"
-  },
-  "funding": {
-    "type": "other",
-    "url": "https://shinygen.ai"
-  },
+  "icon": "images/icon.png",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onCommand:crystallize.saveConversation"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "copilotChatSaver.saveAll",
-        "title": "Copilot Chat Saver: Save All Chats Now"
+        "command": "crystallize.saveConversation",
+        "title": "Crystallize: Save Conversation"
       },
       {
-        "command": "copilotChatSaver.toggleAutoSave",
-        "title": "Copilot Chat Saver: Toggle Auto-Save"
-      },
-      {
-        "command": "copilotChatSaver.openHistory",
-        "title": "Copilot Chat Saver: Open History Folder"
+        "command": "crystallize.setApiKey",
+        "title": "Crystallize: Set API Key"
       }
     ],
     "configuration": {
-      "title": "Copilot Chat Saver",
+      "title": "Crystallize",
       "properties": {
-        "copilotChatSaver.autoSave": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically save chat sessions when changes are detected."
-        },
-        "copilotChatSaver.outputDirectory": {
+        "crystallize.outputFolder": {
           "type": "string",
-          "default": ".chat-history",
-          "description": "Directory (relative to workspace root) where chat sessions are saved."
+          "default": "",
+          "description": "Absolute path to the folder where summaries are saved. Leave empty to use the workspace root.",
+          "scope": "resource"
         },
-        "copilotChatSaver.pollIntervalSeconds": {
+        "crystallize.llmProvider": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "anthropic"
+          ],
+          "default": "openai",
+          "description": "Which LLM provider to use for summarization."
+        },
+        "crystallize.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Model to use. E.g. gpt-4o-mini, gpt-4o, claude-haiku-4-5, claude-sonnet-4-6."
+        },
+        "crystallize.maxTokens": {
           "type": "number",
-          "default": 30,
-          "minimum": 5,
-          "maximum": 3600,
-          "description": "How often to check for new/updated chat sessions (seconds)."
+          "default": 1500,
+          "minimum": 500,
+          "maximum": 4000,
+          "description": "Maximum tokens for the LLM summary response."
         },
-        "copilotChatSaver.includeThinking": {
+        "crystallize.summaryPrompt": {
+          "type": "string",
+          "default": "You are summarizing a {{turnCount}}-turn Copilot session from {{date}} in workspace \"{{workspaceName}}\".\nTopic: {{firstMessage}}\n{{linearIssueId}}Linear issue: {{linearIssueId}}\n{{/linearIssueId}}\nRespond ONLY with a valid JSON object - no markdown fences, no preamble:\n{\n  \"filename\": \"short-descriptive-slug\",\n  \"summary\": \"## Problem\\n...\\n## Decisions\\n...\\n## Next Steps\\n...\"\n}\nThe filename must NOT include the date (it will be prepended automatically). Keep it under 60 chars, lowercase, hyphens only.",
+          "description": "Prompt template sent to the LLM. Supports variables: {{date}}, {{time}}, {{sessionId}}, {{turnCount}}, {{firstMessage}}, {{workspaceName}}, {{model}}, {{linearIssueId}}.",
+          "editPresentation": "multilineText"
+        },
+        "crystallize.includeFullTranscript": {
           "type": "boolean",
           "default": true,
-          "description": "Include Claude thinking/reasoning blocks in saved chats."
+          "description": "Append the full conversation transcript below the summary in the output file."
         },
-        "copilotChatSaver.includeToolCalls": {
-          "type": "boolean",
-          "default": true,
-          "description": "Include tool call details (file reads, searches, edits) in saved chats."
+        "crystallize.maxTranscriptChars": {
+          "type": "number",
+          "default": 60000,
+          "description": "Maximum characters of transcript sent to the LLM. Truncates from the middle, preserving first and last turns."
+        },
+        "crystallize.pickerPageSize": {
+          "type": "number",
+          "default": 5,
+          "description": "Number of sessions shown per page in the session picker.",
+          "scope": "resource"
         }
       }
     }
@@ -82,7 +93,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.95.0",
+    "@types/vscode": "^1.85.0",
     "typescript": "^5.5.0",
     "@vscode/vsce": "^3.0.0"
   }

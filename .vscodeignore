@@ -4,5 +4,7 @@ src/
 .vscode-test/
 .chat-history/
 *.vsix
-*.map
+**/*.map
+**/*.ts
 tsconfig.json
+SPEC.md
