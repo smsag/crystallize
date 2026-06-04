@@ -16,6 +16,9 @@
   "categories": [
     "Other"
   ],
+  "extensionDependencies": [
+    "github.copilot-chat"
+  ],
   "activationEvents": [
     "onCommand:crystallize.saveConversation"
   ],
@@ -25,10 +28,6 @@
       {
         "command": "crystallize.saveConversation",
         "title": "Crystallize: Save Conversation"
-      },
-      {
-        "command": "crystallize.setApiKey",
-        "title": "Crystallize: Set API Key"
       }
     ],
     "configuration": {
@@ -39,20 +38,6 @@
           "default": "",
           "description": "Absolute path to the folder where summaries are saved. Leave empty to use the workspace root.",
           "scope": "resource"
-        },
-        "crystallize.llmProvider": {
-          "type": "string",
-          "enum": [
-            "openai",
-            "anthropic"
-          ],
-          "default": "openai",
-          "description": "Which LLM provider to use for summarization."
-        },
-        "crystallize.model": {
-          "type": "string",
-          "default": "gpt-4o-mini",
-          "description": "Model to use. E.g. gpt-4o-mini, gpt-4o, claude-haiku-4-5, claude-sonnet-4-6."
         },
         "crystallize.maxTokens": {
           "type": "number",

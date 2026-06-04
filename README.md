@@ -1,7 +1,7 @@
 # Crystallize
 
 Crystallize turns GitHub Copilot Chat sessions into structured Markdown notes.
-You choose a session from a paginated picker, Crystallize summarizes it with your configured LLM provider, and saves a dated Markdown file with summary and optional full transcript.
+You choose a session from a paginated picker, Crystallize summarizes it with the active GitHub Copilot Chat model, and saves a dated Markdown file with summary and optional full transcript.
 
 ## Features
 
@@ -9,20 +9,16 @@ You choose a session from a paginated picker, Crystallize summarizes it with you
 - Paginated recent-session picker from local `chatSessions` storage
 - Prompt templating with runtime variables
 - Structured LLM response parsing (`{ filename, summary }`)
-- OpenAI and Anthropic provider support
-- API keys stored in VS Code SecretStorage
+- Uses VS Code Language Model API (`vscode.lm`) via GitHub Copilot Chat
 - Markdown output with frontmatter + summary + optional transcript
 
 ## Commands
 
 - `Crystallize: Save Conversation`
-- `Crystallize: Set API Key`
 
 ## Settings
 
 - `crystallize.outputFolder`
-- `crystallize.llmProvider`
-- `crystallize.model`
 - `crystallize.maxTokens`
 - `crystallize.summaryPrompt`
 - `crystallize.includeFullTranscript`
@@ -45,4 +41,4 @@ Open the workspace in VS Code and press `F5` to launch an Extension Development 
 
 ## Privacy
 
-Crystallize only reads local VS Code chat session files and writes Markdown output to your configured folder (or workspace root fallback). Network calls are only made to the configured LLM provider.
+Crystallize only reads local VS Code chat session files and writes Markdown output to your configured folder (or workspace root fallback). LLM calls are routed through VS Code's Copilot Chat integration.
