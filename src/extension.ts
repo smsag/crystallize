@@ -7,27 +7,18 @@ import { PromptContext, renderPrompt } from './promptRenderer';
 import { parseSession } from './sessionReader';
 import { pickSession } from './sessionPicker';
 import { writeOutput } from './fileWriter';
-import { getApiKey, promptAndStoreApiKey } from './secretsManager';
-
-type Provider = 'openai' | 'anthropic';
 
 export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.commands.registerCommand('crystallize.saveConversation', async () => {
-            await saveConversation(context);
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('crystallize.setApiKey', async () => {
-            await promptAndStoreApiKey(context);
+            await saveConversation();
         })
     );
 }
 
 export function deactivate(): void {}
 
-async function saveConversation(context: vscode.ExtensionContext): Promise<void> {
+async function saveConversation(): Promise<void> {
     const selectedMeta = await pickSession();
     if (!selectedMeta) {
         return;
@@ -42,8 +33,7 @@ async function saveConversation(context: vscode.ExtensionContext): Promise<void>
     }
 
     const config = vscode.workspace.getConfiguration('crystallize');
-    const provider = config.get<Provider>('llmProvider', 'openai');
-    const model = config.get<string>('model', 'gpt-4o-mini');
+    const model = '';
     const maxTokens = config.get<number>('maxTokens', 1500);
     const maxTranscriptChars = config.get<number>('maxTranscriptChars', 60000);
     const includeFullTranscript = config.get<boolean>('includeFullTranscript', true);
@@ -57,12 +47,6 @@ async function saveConversation(context: vscode.ExtensionContext): Promise<void>
         ignoreFocusOut: true,
     });
     const linearIssueId = (linearIssueInput ?? '').trim();
-
-    const apiKey = await getApiKey(context, provider);
-    if (!apiKey) {
-        vscode.window.showErrorMessage("No API key set. Run 'Crystallize: Set API Key'.");
-        return;
-    }
 
     const firstMessage = session.turns.find((turn) => turn.role === 'user')?.content ?? '';
     const promptContext: PromptContext = {
@@ -86,7 +70,7 @@ async function saveConversation(context: vscode.ExtensionContext): Promise<void>
                 title: 'Crystallize: Summarizing...',
                 cancellable: false,
             },
-            async () => summarize(transcript, renderedPrompt, provider, model, apiKey, maxTokens)
+            async (_progress, token) => summarize(transcript, renderedPrompt, maxTokens, token)
         );
 
         const markdown = renderOutputFile(
