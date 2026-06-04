@@ -39,12 +39,12 @@ export function renderOutputFile(
         frontmatter.push(`linearIssueId: ${linearIssueId.trim()}`);
     }
 
-    frontmatter.push('source: GitHub Copilot Chat', '---');
+    frontmatter.push('type: GitHub Copilot Chat', '---');
 
     const output: string[] = [
         frontmatter.join('\n'),
         '',
-        '# Summary',
+        '## What this is about',
         '',
         summary.trim(),
     ];
