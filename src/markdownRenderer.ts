@@ -21,36 +21,31 @@ export function renderOutputFile(
     filename: string,
     summary: string,
     session: ChatSession,
-    linearIssueId: string,
+    ticketId: string,
     includeTranscript: boolean
 ): string {
     void filename;
 
-    const model = vscode.workspace.getConfiguration('crystallize').get<string>('model', '');
+    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const today = new Date().toISOString().slice(0, 10);
     const frontmatter: string[] = [
         '---',
-        `sessionId: ${session.sessionId}`,
+        'type: GitHub Copilot Chat',
         `date: ${today}`,
-        `model: ${model}`,
+        `sessionId: ${session.sessionId}`,
+        `workspace: ${workspace}`,
+        `ticketId: ${ticketId.trim()}`,
+        '---',
     ];
-
-    if (linearIssueId.trim()) {
-        frontmatter.push(`linearIssueId: ${linearIssueId.trim()}`);
-    }
-
-    frontmatter.push('type: GitHub Copilot Chat', '---');
 
     const output: string[] = [
         frontmatter.join('\n'),
-        '',
-        '## What this is about',
         '',
         summary.trim(),
     ];
 
     if (includeTranscript) {
-        output.push('', '---', '', '# Full Transcript', '', renderTranscript(session));
+        output.push('', '---', '', '## Full Transcript', '', renderTranscript(session));
     }
 
     return output.join('\n');
