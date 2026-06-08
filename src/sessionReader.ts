@@ -49,17 +49,21 @@ export async function getSessionsMeta(offset: number, limit: number): Promise<Ch
     const metas: ChatSessionMeta[] = [];
 
     for (const filePath of page) {
-        const stat = await fs.promises.stat(filePath);
-        const light = await getLightweightMeta(filePath);
-        const firstUserMessage = clampForMeta(light.firstUserMessage);
+        try {
+            const stat = await fs.promises.stat(filePath);
+            const light = await getLightweightMeta(filePath);
+            const firstUserMessage = clampForMeta(light.firstUserMessage);
 
-        metas.push({
-            sessionId: path.basename(filePath, path.extname(filePath)),
-            filePath,
-            modifiedAt: stat.mtimeMs,
-            firstUserMessage,
-            turnCount: light.turnCount,
-        });
+            metas.push({
+                sessionId: path.basename(filePath, path.extname(filePath)),
+                filePath,
+                modifiedAt: stat.mtimeMs,
+                firstUserMessage,
+                turnCount: light.turnCount,
+            });
+        } catch {
+            // Skip unreadable or malformed session files.
+        }
     }
 
     return metas;
@@ -159,17 +163,28 @@ async function findWorkspaceDescriptor(storageFolder: string): Promise<string | 
     return undefined;
 }
 
+const VSCODE_VARIANTS = ['Code', 'Code - Insiders', 'Code - OSS', 'VSCodium'];
+
 function getWorkspaceStorageBase(): string {
     if (process.platform === 'darwin') {
-        return path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'workspaceStorage');
+        const base = path.join(os.homedir(), 'Library', 'Application Support');
+        return findFirstExisting(VSCODE_VARIANTS.map((v) => path.join(base, v, 'User', 'workspaceStorage')))
+            ?? path.join(base, 'Code', 'User', 'workspaceStorage');
     }
 
     if (process.platform === 'win32') {
         const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
-        return path.join(appData, 'Code', 'User', 'workspaceStorage');
+        return findFirstExisting(VSCODE_VARIANTS.map((v) => path.join(appData, v, 'User', 'workspaceStorage')))
+            ?? path.join(appData, 'Code', 'User', 'workspaceStorage');
     }
 
-    return path.join(os.homedir(), '.config', 'Code', 'User', 'workspaceStorage');
+    const configBase = path.join(os.homedir(), '.config');
+    return findFirstExisting(VSCODE_VARIANTS.map((v) => path.join(configBase, v, 'User', 'workspaceStorage')))
+        ?? path.join(configBase, 'Code', 'User', 'workspaceStorage');
+}
+
+function findFirstExisting(candidates: string[]): string | undefined {
+    return candidates.find((c) => exists(c));
 }
 
 async function listSessionFiles(chatSessionsFolder: string): Promise<string[]> {
@@ -229,12 +244,15 @@ async function getJsonlLightweightMeta(filePath: string): Promise<{ firstUserMes
 
 async function getJsonLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number }> {
     const raw = await fs.promises.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-
-    return {
-        firstUserMessage: extractFirstUserForMeta(parsed),
-        turnCount: countTurnsForMeta(parsed),
-    };
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+        return {
+            firstUserMessage: extractFirstUserForMeta(parsed),
+            turnCount: countTurnsForMeta(parsed),
+        };
+    } catch {
+        return { firstUserMessage: '', turnCount: 0 };
+    }
 }
 
 async function parseTurnsFromFile(filePath: string): Promise<ChatTurn[]> {
@@ -270,9 +288,14 @@ async function parseJsonlTurns(filePath: string): Promise<ChatTurn[]> {
 
 async function parseJsonTurns(filePath: string): Promise<ChatTurn[]> {
     const raw = await fs.promises.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-    const turns = extractTurns(parsed);
-    return dedupeAndSanitizeTurns(turns);
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+        const turns = extractTurns(parsed);
+        return dedupeAndSanitizeTurns(turns);
+    } catch (error) {
+        console.warn(`[crystallize] Skipping malformed JSON session file ${filePath}:`, error);
+        return [];
+    }
 }
 
 function extractTurns(value: unknown): ChatTurn[] {

@@ -24,8 +24,13 @@ async function resolveOutputFolder(): Promise<string> {
     const config = vscode.workspace.getConfiguration('crystallize');
     const configuredPath = (config.get<string>('outputFolder', '') || '').trim();
 
-    if (configuredPath && exists(configuredPath)) {
-        return configuredPath;
+    if (configuredPath) {
+        if (exists(configuredPath)) {
+            return configuredPath;
+        }
+        vscode.window.showWarningMessage(
+            `Crystallize: outputFolder "${configuredPath}" does not exist. Saving to workspace root instead.`
+        );
     }
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;

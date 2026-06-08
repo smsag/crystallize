@@ -11,30 +11,54 @@ export async function summarize(
     maxTokens: number,
     token: vscode.CancellationToken
 ): Promise<LLMResult> {
-    void maxTokens;
-
     try {
         const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         if (!model) {
             throw new Error('No Copilot model available. Make sure GitHub Copilot Chat is installed and signed in.');
         }
 
+        const jsonInstruction =
+            'Respond with valid JSON only — no markdown fences, no prose. ' +
+            'Your response must be a single JSON object with exactly two string fields: "filename" and "summary".\n\n';
+
         const messages = [
-            vscode.LanguageModelChatMessage.User(`${renderedPrompt}\n\n${transcript}`),
+            vscode.LanguageModelChatMessage.User(`${jsonInstruction}${renderedPrompt}\n\n${transcript}`),
         ];
 
-        const response = await model.sendRequest(
-            messages,
-            { justification: 'Crystallize: summarizing Copilot session' },
-            token
-        );
+        const requestOptions = {
+            justification: 'Crystallize: summarizing Copilot session',
+            modelOptions: { max_tokens: maxTokens },
+        };
+
+        const response = await model.sendRequest(messages, requestOptions, token);
 
         let rawText = '';
         for await (const chunk of response.text) {
             rawText += chunk;
         }
 
-        return parseStructuredResponse(rawText);
+        let parsed = parseJsonObject(rawText);
+
+        if (parsed === undefined) {
+            const retry = await model.sendRequest(
+                [
+                    ...messages,
+                    vscode.LanguageModelChatMessage.Assistant(rawText),
+                    vscode.LanguageModelChatMessage.User(
+                        'That response was not valid JSON. Return only the JSON object with "filename" and "summary" fields, nothing else.'
+                    ),
+                ],
+                { justification: 'Crystallize: summarizing Copilot session' },
+                token
+            );
+            rawText = '';
+            for await (const chunk of retry.text) {
+                rawText += chunk;
+            }
+            parsed = parseJsonObject(rawText);
+        }
+
+        return buildResult(parsed);
     } catch (error) {
         if (token.isCancellationRequested) {
             throw new Error('Summarization was cancelled.');
@@ -53,8 +77,7 @@ export async function summarize(
     }
 }
 
-function parseStructuredResponse(rawText: string): LLMResult {
-    const parsed = parseJsonObject(rawText);
+function buildResult(parsed: unknown): LLMResult {
     if (parsed === undefined) {
         throw new Error('LLM response was not valid JSON. Try again or adjust your prompt.');
     }

@@ -68,7 +68,7 @@ async function saveConversation(): Promise<void> {
             {
                 location: vscode.ProgressLocation.Notification,
                 title: 'Crystallize: Summarizing...',
-                cancellable: false,
+                cancellable: true,
             },
             async (_progress, token) => summarize(transcript, renderedPrompt, maxTokens, token)
         );
