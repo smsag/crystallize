@@ -21,26 +21,29 @@ export function renderOutputFile(
     filename: string,
     summary: string,
     session: ChatSession,
-    ticketId: string,
+    linearIssueId: string,
     includeTranscript: boolean
 ): string {
     void filename;
 
-    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const today = new Date().toISOString().slice(0, 10);
+    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const frontmatter: string[] = [
         '---',
         'type: GitHub Copilot Chat',
         `date: ${today}`,
         `sessionId: ${session.sessionId}`,
         `workspace: ${workspace}`,
-        `ticketId: ${ticketId.trim()}`,
-        '---',
     ];
+
+    if (linearIssueId.trim()) {
+        frontmatter.push(`ticketId: ${linearIssueId.trim()}`);
+    }
+
+    frontmatter.push('---');
 
     const output: string[] = [
         frontmatter.join('\n'),
-        '',
         summary.trim(),
     ];
 
