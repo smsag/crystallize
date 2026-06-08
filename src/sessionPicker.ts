@@ -89,6 +89,13 @@ export async function pickSession(): Promise<ChatSessionMeta | undefined> {
             if (selected.itemType === 'loadMore') {
                 ignoreNextHide = true;
                 await loadPage();
+                // If onDidHide fired during the load it reset ignoreNextHide to false,
+                // meaning the user dismissed the picker — resolve and stop.
+                if (!ignoreNextHide) {
+                    safeResolve(undefined);
+                    return;
+                }
+                ignoreNextHide = false;
                 quickPick.activeItems = [];
                 quickPick.show();
             }

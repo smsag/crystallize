@@ -24,20 +24,19 @@ export function renderOutputFile(
     linearIssueId: string,
     includeTranscript: boolean
 ): string {
-    void filename;
-
     const today = new Date().toISOString().slice(0, 10);
     const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const frontmatter: string[] = [
         '---',
         'type: GitHub Copilot Chat',
         `date: ${today}`,
-        `sessionId: ${session.sessionId}`,
-        `workspace: ${workspace}`,
+        `filename: ${yamlQuote(filename)}`,
+        `sessionId: ${yamlQuote(session.sessionId)}`,
+        `workspace: ${yamlQuote(workspace)}`,
     ];
 
     if (linearIssueId.trim()) {
-        frontmatter.push(`ticketId: ${linearIssueId.trim()}`);
+        frontmatter.push(`ticketId: ${yamlQuote(linearIssueId.trim())}`);
     }
 
     frontmatter.push('---');
@@ -56,4 +55,8 @@ export function renderOutputFile(
 
 function sanitizeContent(content: string): string {
     return content.trim().replace(/```/g, '\\`\\`\\`');
+}
+
+function yamlQuote(value: string): string {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
