@@ -9,16 +9,31 @@ import { pickSession } from './sessionPicker';
 import { writeOutput } from './fileWriter';
 
 export function activate(context: vscode.ExtensionContext): void {
+    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBarItem.command = 'crystallize.configureGitHub';
+    updateStatusBar(statusBarItem, context);
+    statusBarItem.show();
+    context.subscriptions.push(statusBarItem);
+
     context.subscriptions.push(
         vscode.commands.registerCommand('crystallize.saveConversation', async () => {
-            await saveConversation();
+            await saveConversation(context, statusBarItem);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('crystallize.configureGitHub', async () => {
+            await context.workspaceState.update('githubRepoUrl', undefined);
+            await context.workspaceState.update('githubBranch', undefined);
+            await resolveGitHubConfig(context, true);
+            updateStatusBar(statusBarItem, context);
         })
     );
 }
 
 export function deactivate(): void {}
 
-async function saveConversation(): Promise<void> {
+async function saveConversation(context: vscode.ExtensionContext, statusBarItem: vscode.StatusBarItem): Promise<void> {
     const selectedMeta = await pickSession();
     if (!selectedMeta) {
         return;
@@ -47,6 +62,9 @@ async function saveConversation(): Promise<void> {
         ignoreFocusOut: true,
     });
     const ticketId = (linearIssueInput ?? '').trim();
+
+    const { githubRepoUrl, githubBranch } = await resolveGitHubConfig(context, session.fileReferences.length > 0);
+    updateStatusBar(statusBarItem, context);
 
     const firstMessage = session.turns.find((turn) => turn.role === 'user')?.content ?? '';
     const promptContext: PromptContext = {
@@ -78,7 +96,9 @@ async function saveConversation(): Promise<void> {
             result.summary,
             session,
             ticketId,
-            includeFullTranscript
+            includeFullTranscript,
+            githubRepoUrl,
+            githubBranch
         );
 
         await writeOutput(markdown, result.filename);
@@ -86,6 +106,70 @@ async function saveConversation(): Promise<void> {
         const message = error instanceof Error ? error.message : 'Unexpected error while summarizing.';
         vscode.window.showErrorMessage(message);
     }
+}
+
+async function resolveGitHubConfig(
+    context: vscode.ExtensionContext,
+    hasFileRefs: boolean
+): Promise<{ githubRepoUrl: string; githubBranch: string }> {
+    const storedUrl = context.workspaceState.get<string>('githubRepoUrl');
+    const storedBranch = context.workspaceState.get<string>('githubBranch');
+
+    if (storedUrl !== undefined) {
+        return { githubRepoUrl: storedUrl, githubBranch: storedBranch ?? 'main' };
+    }
+
+    if (!hasFileRefs) {
+        return { githubRepoUrl: '', githubBranch: 'main' };
+    }
+
+    const urlInput = await vscode.window.showInputBox({
+        prompt: 'GitHub repository URL for this workspace (optional — used to link investigated files)',
+        placeHolder: 'https://github.com/org/repo',
+        ignoreFocusOut: true,
+    });
+
+    if (urlInput === undefined) {
+        return { githubRepoUrl: '', githubBranch: 'main' };
+    }
+
+    const repoUrl = urlInput.trim().replace(/\/$/, '');
+    await context.workspaceState.update('githubRepoUrl', repoUrl);
+
+    if (!repoUrl) {
+        return { githubRepoUrl: '', githubBranch: 'main' };
+    }
+
+    const branchInput = await vscode.window.showInputBox({
+        prompt: 'Branch to link against',
+        placeHolder: 'main',
+        value: 'main',
+        ignoreFocusOut: true,
+    });
+
+    const branch = (branchInput ?? 'main').trim() || 'main';
+    await context.workspaceState.update('githubBranch', branch);
+
+    return { githubRepoUrl: repoUrl, githubBranch: branch };
+}
+
+function updateStatusBar(item: vscode.StatusBarItem, context: vscode.ExtensionContext): void {
+    const repoUrl = context.workspaceState.get<string>('githubRepoUrl');
+    const branch = context.workspaceState.get<string>('githubBranch') ?? 'main';
+
+    if (repoUrl) {
+        const shortName = githubShortName(repoUrl);
+        item.text = `$(github) ${shortName}`;
+        item.tooltip = `Crystallize · ${repoUrl} (${branch}) — click to reconfigure`;
+    } else {
+        item.text = '$(github) Crystallize';
+        item.tooltip = 'Crystallize · no GitHub repo configured — click to set one';
+    }
+}
+
+function githubShortName(url: string): string {
+    const match = url.match(/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:\/.*)?$/);
+    return match ? match[1] : url;
 }
 
 function detectLinearIssueId(): string | undefined {

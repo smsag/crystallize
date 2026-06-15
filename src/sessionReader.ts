@@ -15,10 +15,17 @@ export interface ChatSessionMeta {
     modifiedAt: number;
     firstUserMessage: string;
     turnCount: number;
+    customTitle: string;
+}
+
+export interface FileReference {
+    path: string;
+    line: number;
 }
 
 export interface ChatSession extends ChatSessionMeta {
     turns: ChatTurn[];
+    fileReferences: FileReference[];
 }
 
 const EMPTY_SESSION_LABEL = '(empty session)';
@@ -60,6 +67,7 @@ export async function getSessionsMeta(offset: number, limit: number): Promise<Ch
                 modifiedAt: stat.mtimeMs,
                 firstUserMessage,
                 turnCount: light.turnCount,
+                customTitle: light.customTitle,
             });
         } catch {
             // Skip unreadable or malformed session files.
@@ -70,7 +78,7 @@ export async function getSessionsMeta(offset: number, limit: number): Promise<Ch
 }
 
 export async function parseSession(meta: ChatSessionMeta): Promise<ChatSession> {
-    const turns = await parseTurnsFromFile(meta.filePath);
+    const { turns, fileReferences } = await parseTurnsFromFile(meta.filePath);
     const firstUser = turns.find((turn) => turn.role === 'user')?.content ?? '';
 
     return {
@@ -79,7 +87,9 @@ export async function parseSession(meta: ChatSessionMeta): Promise<ChatSession> 
         modifiedAt: meta.modifiedAt,
         firstUserMessage: firstUser ? clampForMeta(firstUser) : EMPTY_SESSION_LABEL,
         turnCount: turns.length,
+        customTitle: meta.customTitle,
         turns,
+        fileReferences,
     };
 }
 
@@ -204,7 +214,7 @@ async function listSessionFiles(chatSessionsFolder: string): Promise<string[]> {
     return withStats.map((entry) => entry.filePath);
 }
 
-async function getLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number }> {
+async function getLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number; customTitle: string }> {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.jsonl') {
         return getJsonlLightweightMeta(filePath);
@@ -213,11 +223,12 @@ async function getLightweightMeta(filePath: string): Promise<{ firstUserMessage:
     return getJsonLightweightMeta(filePath);
 }
 
-async function getJsonlLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number }> {
+async function getJsonlLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number; customTitle: string }> {
     const raw = await fs.promises.readFile(filePath, 'utf8');
     const lines = raw.split(/\r?\n/);
     let firstUserMessage = '';
     let turnCount = 0;
+    let customTitle = '';
 
     for (const line of lines) {
         const trimmed = line.trim();
@@ -227,6 +238,19 @@ async function getJsonlLightweightMeta(filePath: string): Promise<{ firstUserMes
 
         try {
             const parsed = JSON.parse(trimmed) as unknown;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                const record = parsed as Record<string, unknown>;
+                if (
+                    record.kind === 1 &&
+                    Array.isArray(record.k) &&
+                    record.k.length === 1 &&
+                    record.k[0] === 'customTitle' &&
+                    typeof record.v === 'string' &&
+                    record.v.trim()
+                ) {
+                    customTitle = record.v.trim();
+                }
+            }
             turnCount += countTurnsForMeta(parsed);
             if (!firstUserMessage) {
                 firstUserMessage = extractFirstUserForMeta(parsed);
@@ -239,23 +263,30 @@ async function getJsonlLightweightMeta(filePath: string): Promise<{ firstUserMes
     return {
         firstUserMessage,
         turnCount,
+        customTitle,
     };
 }
 
-async function getJsonLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number }> {
+async function getJsonLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number; customTitle: string }> {
     const raw = await fs.promises.readFile(filePath, 'utf8');
     try {
         const parsed = JSON.parse(raw) as unknown;
         return {
             firstUserMessage: extractFirstUserForMeta(parsed),
             turnCount: countTurnsForMeta(parsed),
+            customTitle: '',
         };
     } catch {
-        return { firstUserMessage: '', turnCount: 0 };
+        return { firstUserMessage: '', turnCount: 0, customTitle: '' };
     }
 }
 
-async function parseTurnsFromFile(filePath: string): Promise<ChatTurn[]> {
+interface ParseResult {
+    turns: ChatTurn[];
+    fileReferences: FileReference[];
+}
+
+async function parseTurnsFromFile(filePath: string): Promise<ParseResult> {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.jsonl') {
         return parseJsonlTurns(filePath);
@@ -264,10 +295,17 @@ async function parseTurnsFromFile(filePath: string): Promise<ChatTurn[]> {
     return parseJsonTurns(filePath);
 }
 
-async function parseJsonlTurns(filePath: string): Promise<ChatTurn[]> {
-    const turns: ChatTurn[] = [];
+async function parseJsonlTurns(filePath: string): Promise<ParseResult> {
     const raw = await fs.promises.readFile(filePath, 'utf8');
     const lines = raw.split(/\r?\n/);
+
+    // Replay the patch log into a final requests list before extracting turns.
+    // The JSONL uses two relevant kind=2 shapes:
+    //   k=['requests']            v=[...newRequests]   — appends new requests
+    //   k=['requests', N, 'response']  v=[...items]    — patches request N's response
+    // Processing each line independently misses the response patches, so we build
+    // final state first and extract turns once at the end.
+    const requests: Array<Record<string, unknown>> = [];
 
     for (const line of lines) {
         const trimmed = line.trim();
@@ -277,25 +315,119 @@ async function parseJsonlTurns(filePath: string): Promise<ChatTurn[]> {
 
         try {
             const parsed = JSON.parse(trimmed) as unknown;
-            turns.push(...extractTurns(parsed));
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                continue;
+            }
+
+            const record = parsed as Record<string, unknown>;
+            if (record.kind !== 2 || !Array.isArray(record.k) || !Array.isArray(record.v)) {
+                continue;
+            }
+
+            const k = record.k as unknown[];
+
+            if (k.length === 1 && k[0] === 'requests') {
+                for (const req of record.v) {
+                    if (req && typeof req === 'object' && !Array.isArray(req)) {
+                        requests.push(req as Record<string, unknown>);
+                    }
+                }
+            } else if (
+                k.length === 3 &&
+                k[0] === 'requests' &&
+                typeof k[1] === 'number' &&
+                k[2] === 'response'
+            ) {
+                const idx = k[1] as number;
+                if (idx >= 0 && idx < requests.length) {
+                    requests[idx] = { ...requests[idx], response: record.v };
+                }
+            }
         } catch (error) {
             console.warn(`[crystallize] Skipping malformed JSONL line in ${filePath}:`, error);
         }
     }
 
-    return dedupeAndSanitizeTurns(turns);
+    const turns: ChatTurn[] = [];
+    for (const req of requests) {
+        turns.push(...extractTurnsFromRequest(req));
+    }
+
+    return {
+        turns: dedupeAndSanitizeTurns(turns),
+        fileReferences: extractFileRefsFromRequests(requests),
+    };
 }
 
-async function parseJsonTurns(filePath: string): Promise<ChatTurn[]> {
+async function parseJsonTurns(filePath: string): Promise<ParseResult> {
     const raw = await fs.promises.readFile(filePath, 'utf8');
     try {
         const parsed = JSON.parse(raw) as unknown;
         const turns = extractTurns(parsed);
-        return dedupeAndSanitizeTurns(turns);
+        return { turns: dedupeAndSanitizeTurns(turns), fileReferences: [] };
     } catch (error) {
         console.warn(`[crystallize] Skipping malformed JSON session file ${filePath}:`, error);
-        return [];
+        return { turns: [], fileReferences: [] };
     }
+}
+
+function extractFileRefsFromRequests(requests: Array<Record<string, unknown>>): FileReference[] {
+    const seen = new Set<string>();
+    const refs: FileReference[] = [];
+
+    for (const req of requests) {
+        const response = req.response;
+        if (!Array.isArray(response)) {
+            continue;
+        }
+
+        for (const item of response) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                continue;
+            }
+
+            const r = item as Record<string, unknown>;
+            if (r.kind !== 'inlineReference') {
+                continue;
+            }
+
+            const ref = r.inlineReference;
+            if (!ref || typeof ref !== 'object' || Array.isArray(ref)) {
+                continue;
+            }
+
+            const refObj = ref as Record<string, unknown>;
+            let filePath = '';
+            let line = 0;
+
+            if (refObj.location && typeof refObj.location === 'object' && !Array.isArray(refObj.location)) {
+                // Shape A: symbol reference — location.uri + location.range
+                const loc = refObj.location as Record<string, unknown>;
+                const uri = loc.uri as Record<string, unknown> | undefined;
+                const range = loc.range as Record<string, unknown> | undefined;
+                filePath = String(uri?.path || uri?.fsPath || '');
+                line = typeof range?.startLineNumber === 'number' ? range.startLineNumber : 0;
+            } else if (refObj.uri && typeof refObj.uri === 'object' && !Array.isArray(refObj.uri)) {
+                // Shape B: direct file reference — uri + range on inlineReference
+                const uri = refObj.uri as Record<string, unknown>;
+                const range = refObj.range as Record<string, unknown> | undefined;
+                filePath = String(uri.path || uri.fsPath || '');
+                line = typeof range?.startLineNumber === 'number' ? range.startLineNumber : 0;
+            }
+
+            if (!filePath || !line) {
+                continue;
+            }
+
+            const key = `${filePath}:${line}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                refs.push({ path: filePath, line });
+            }
+        }
+    }
+
+    return refs;
 }
 
 function extractTurns(value: unknown): ChatTurn[] {
