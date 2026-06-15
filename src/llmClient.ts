@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import JSON5 from 'json5';
 
 export interface LLMResult {
     filename: string;
@@ -9,7 +10,8 @@ export async function summarize(
     transcript: string,
     renderedPrompt: string,
     maxTokens: number,
-    token: vscode.CancellationToken
+    token: vscode.CancellationToken,
+    onRawResponse?: (rawText: string) => void
 ): Promise<LLMResult> {
     void maxTokens;
 
@@ -34,7 +36,12 @@ export async function summarize(
             rawText += chunk;
         }
 
-        return parseStructuredResponse(rawText);
+        try {
+            return parseStructuredResponse(rawText);
+        } catch (error) {
+            onRawResponse?.(rawText);
+            throw error;
+        }
     } catch (error) {
         if (token.isCancellationRequested) {
             throw new Error('Summarization was cancelled.');
@@ -54,7 +61,7 @@ export async function summarize(
 }
 
 function parseStructuredResponse(rawText: string): LLMResult {
-    const parsed = parseJsonObject(rawText);
+    const parsed = parseJsonObject(rawText) ?? parseKeyValueFallback(rawText);
     if (parsed === undefined) {
         throw new Error('LLM response was not valid JSON. Try again or adjust your prompt.');
     }
@@ -63,7 +70,14 @@ function parseStructuredResponse(rawText: string): LLMResult {
         throw new Error('LLM returned unexpected response shape. Try again.');
     }
 
-    const result = parsed as Record<string, unknown>;
+    const result = Array.isArray(parsed)
+        ? parsed.find((item) => item && typeof item === 'object') as Record<string, unknown> | undefined
+        : parsed as Record<string, unknown>;
+
+    if (!result) {
+        throw new Error('LLM returned unexpected response shape. Try again.');
+    }
+
     if (typeof result.filename !== 'string' || typeof result.summary !== 'string') {
         throw new Error('LLM returned unexpected response shape. Try again.');
     }
@@ -83,6 +97,7 @@ function parseJsonObject(rawText: string): unknown {
     const candidates = [
         rawText.trim(),
         stripMarkdownFence(rawText),
+        ...extractCodeBlocks(rawText),
     ];
 
     for (const candidate of candidates) {
@@ -90,10 +105,9 @@ function parseJsonObject(rawText: string): unknown {
             continue;
         }
 
-        try {
-            return JSON.parse(candidate);
-        } catch {
-            // Fall through to object extraction.
+        const parsed = parseJsonCandidate(candidate);
+        if (parsed !== undefined) {
+            return parsed;
         }
     }
 
@@ -102,16 +116,52 @@ function parseJsonObject(rawText: string): unknown {
         return undefined;
     }
 
-    try {
-        return JSON.parse(extracted);
-    } catch {
-        return undefined;
+    return parseJsonCandidate(extracted);
+}
+
+function parseJsonCandidate(value: string): unknown {
+    const variants = [
+        value,
+        normalizeJsonLikeText(value),
+    ];
+
+    for (const variant of variants) {
+        if (!variant) {
+            continue;
+        }
+
+        try {
+            return JSON.parse(variant);
+        } catch {
+            try {
+                return JSON5.parse(variant);
+            } catch {
+                // Keep trying with additional variants.
+            }
+        }
     }
+
+    return undefined;
 }
 
 function stripMarkdownFence(rawText: string): string | undefined {
     const match = rawText.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
     return match?.[1]?.trim();
+}
+
+function extractCodeBlocks(rawText: string): string[] {
+    const matches = rawText.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi);
+    return Array.from(matches)
+        .map((match) => match[1]?.trim())
+        .filter((value): value is string => Boolean(value));
+}
+
+function normalizeJsonLikeText(rawText: string): string {
+    return rawText
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/,\s*([}\]])/g, '$1')
+        .trim();
 }
 
 function extractFirstJsonObject(rawText: string): string | undefined {
@@ -167,6 +217,30 @@ function extractFirstJsonObject(rawText: string): string | undefined {
     }
 
     return undefined;
+}
+
+function parseKeyValueFallback(rawText: string): LLMResult | undefined {
+    const cleaned = rawText.trim();
+    if (!cleaned) {
+        return undefined;
+    }
+
+    const filenameLine = cleaned.match(/(?:^|\n)\s*filename\s*:\s*(.+)\s*(?:\n|$)/i);
+    const summaryBlock = cleaned.match(/(?:^|\n)\s*summary\s*:\s*([\s\S]+)/i);
+    if (!filenameLine || !summaryBlock) {
+        return undefined;
+    }
+
+    const filename = filenameLine[1]
+        .trim()
+        .replace(/^['"`]|['"`]$/g, '');
+    const summary = summaryBlock[1].trim().replace(/^['"]|['"]$/g, '');
+
+    if (!filename || !summary) {
+        return undefined;
+    }
+
+    return { filename, summary };
 }
 
 function sanitizeFilename(value: string): string {

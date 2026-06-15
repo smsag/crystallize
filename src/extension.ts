@@ -9,16 +9,19 @@ import { pickSession } from './sessionPicker';
 import { writeOutput } from './fileWriter';
 
 export function activate(context: vscode.ExtensionContext): void {
+    const debugOutputChannel = vscode.window.createOutputChannel('Crystallize Debug');
+
     context.subscriptions.push(
+        debugOutputChannel,
         vscode.commands.registerCommand('crystallize.saveConversation', async () => {
-            await saveConversation();
+            await saveConversation(debugOutputChannel);
         })
     );
 }
 
 export function deactivate(): void {}
 
-async function saveConversation(): Promise<void> {
+async function saveConversation(debugOutputChannel: vscode.OutputChannel): Promise<void> {
     const selectedMeta = await pickSession();
     if (!selectedMeta) {
         return;
@@ -37,6 +40,7 @@ async function saveConversation(): Promise<void> {
     const maxTokens = config.get<number>('maxTokens', 1500);
     const maxTranscriptChars = config.get<number>('maxTranscriptChars', 60000);
     const includeFullTranscript = config.get<boolean>('includeFullTranscript', true);
+    const logRawLlmResponse = config.get<boolean>('logRawLlmResponse', true);
     const promptTemplate = config.get<string>('summaryPrompt', '');
 
     const detectedLinearIssueId = detectLinearIssueId();
@@ -70,7 +74,22 @@ async function saveConversation(): Promise<void> {
                 title: 'Crystallize: Summarizing...',
                 cancellable: false,
             },
-            async (_progress, token) => summarize(transcript, renderedPrompt, maxTokens, token)
+            async (_progress, token) => summarize(
+                transcript,
+                renderedPrompt,
+                maxTokens,
+                token,
+                logRawLlmResponse
+                    ? (rawText) => {
+                        debugOutputChannel.clear();
+                        debugOutputChannel.appendLine('Crystallize raw Copilot response');
+                        debugOutputChannel.appendLine('--- BEGIN RAW RESPONSE ---');
+                        debugOutputChannel.appendLine(rawText);
+                        debugOutputChannel.appendLine('--- END RAW RESPONSE ---');
+                        debugOutputChannel.show(true);
+                    }
+                    : undefined
+            )
         );
 
         const markdown = renderOutputFile(

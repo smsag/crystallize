@@ -2,7 +2,7 @@
   "name": "crystallize",
   "displayName": "Crystallize",
   "description": "Crystallize your Copilot conversations into lasting knowledge - summarized by AI, saved as Markdown.",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "publisher": "smsag",
   "license": "MIT",
   "repository": {
@@ -62,6 +62,11 @@
           "default": 60000,
           "description": "Maximum characters of transcript sent to the LLM. Truncates from the middle, preserving first and last turns."
         },
+        "crystallize.logRawLlmResponse": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write the exact Copilot response to the Crystallize output channel when response parsing fails."
+        },
         "crystallize.pickerPageSize": {
           "type": "number",
           "default": 5,
@@ -79,7 +84,8 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.5.0",
-    "@vscode/vsce": "^3.0.0"
+    "@vscode/vsce": "^3.0.0",
+    "json5": "^2.2.3",
+    "typescript": "^5.5.0"
   }
 }
