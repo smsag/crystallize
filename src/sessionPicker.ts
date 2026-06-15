@@ -89,6 +89,13 @@ export async function pickSession(): Promise<ChatSessionMeta | undefined> {
             if (selected.itemType === 'loadMore') {
                 ignoreNextHide = true;
                 await loadPage();
+                // If onDidHide fired during the load it reset ignoreNextHide to false,
+                // meaning the user dismissed the picker — resolve and stop.
+                if (!ignoreNextHide) {
+                    safeResolve(undefined);
+                    return;
+                }
+                ignoreNextHide = false;
                 quickPick.activeItems = [];
                 quickPick.show();
             }
@@ -120,9 +127,10 @@ export async function pickSession(): Promise<ChatSessionMeta | undefined> {
 function toSessionItem(meta: ChatSessionMeta): SessionPickItem {
     const modifiedDate = new Date(meta.modifiedAt);
     const dateString = modifiedDate.toISOString().slice(0, 10);
+    const label = meta.customTitle || truncate(meta.firstUserMessage, 60);
 
     return {
-        label: `$(clock) ${truncate(meta.firstUserMessage, 60)}`,
+        label: `$(clock) ${label}`,
         description: formatRelativeTime(meta.modifiedAt),
         detail: `${meta.turnCount} turns · ${dateString}`,
         itemType: 'session',

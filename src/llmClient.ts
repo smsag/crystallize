@@ -13,23 +13,26 @@ export async function summarize(
     token: vscode.CancellationToken,
     onRawResponse?: (rawText: string) => void
 ): Promise<LLMResult> {
-    void maxTokens;
-
     try {
         const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         if (!model) {
             throw new Error('No Copilot model available. Make sure GitHub Copilot Chat is installed and signed in.');
         }
 
+        const jsonInstruction =
+            'Respond with valid JSON only — no markdown fences, no prose. ' +
+            'Your response must be a single JSON object with exactly two string fields: "filename" and "summary".\n\n';
+
         const messages = [
-            vscode.LanguageModelChatMessage.User(`${renderedPrompt}\n\n${transcript}`),
+            vscode.LanguageModelChatMessage.User(`${jsonInstruction}${renderedPrompt}\n\n${transcript}`),
         ];
 
-        const response = await model.sendRequest(
-            messages,
-            { justification: 'Crystallize: summarizing Copilot session' },
-            token
-        );
+        const requestOptions = {
+            justification: 'Crystallize: summarizing Copilot session',
+            modelOptions: { max_tokens: maxTokens },
+        };
+
+        const response = await model.sendRequest(messages, requestOptions, token);
 
         let rawText = '';
         for await (const chunk of response.text) {
@@ -38,9 +41,28 @@ export async function summarize(
 
         try {
             return parseStructuredResponse(rawText);
-        } catch (error) {
-            onRawResponse?.(rawText);
-            throw error;
+        } catch {
+            const retry = await model.sendRequest(
+                [
+                    ...messages,
+                    vscode.LanguageModelChatMessage.Assistant(rawText),
+                    vscode.LanguageModelChatMessage.User(
+                        'That response was not valid JSON. Return only the JSON object with "filename" and "summary" fields, nothing else.'
+                    ),
+                ],
+                { justification: 'Crystallize: summarizing Copilot session' },
+                token
+            );
+            rawText = '';
+            for await (const chunk of retry.text) {
+                rawText += chunk;
+            }
+            try {
+                return parseStructuredResponse(rawText);
+            } catch (retryError) {
+                onRawResponse?.(rawText);
+                throw retryError;
+            }
         }
     } catch (error) {
         if (token.isCancellationRequested) {
