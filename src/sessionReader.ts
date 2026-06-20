@@ -16,6 +16,7 @@ export interface ChatSessionMeta {
     firstUserMessage: string;
     turnCount: number;
     customTitle: string;
+    source: 'copilot' | 'claude-code';
 }
 
 export interface FileReference {
@@ -30,6 +31,12 @@ export interface ChatSession extends ChatSessionMeta {
 
 const EMPTY_SESSION_LABEL = '(empty session)';
 
+interface SessionFileEntry {
+    filePath: string;
+    modifiedAt: number;
+    source: 'copilot' | 'claude-code';
+}
+
 export async function getSessionsMeta(offset: number, limit: number): Promise<ChatSessionMeta[]> {
     const safeOffset = Math.max(0, offset);
     const safeLimit = Math.max(0, limit);
@@ -37,6 +44,43 @@ export async function getSessionsMeta(offset: number, limit: number): Promise<Ch
         return [];
     }
 
+    const [copilotEntries, claudeEntries] = await Promise.all([
+        listCopilotSessionFiles(),
+        listClaudeCodeSessionFiles(),
+    ]);
+
+    const allEntries = mergeSortedDesc(copilotEntries, claudeEntries);
+    if (safeOffset >= allEntries.length) {
+        return [];
+    }
+
+    const page = allEntries.slice(safeOffset, safeOffset + safeLimit);
+    const metas: ChatSessionMeta[] = [];
+
+    for (const entry of page) {
+        try {
+            const light = entry.source === 'claude-code'
+                ? await getClaudeCodeLightweightMeta(entry.filePath)
+                : await getLightweightMeta(entry.filePath);
+
+            metas.push({
+                sessionId: path.basename(entry.filePath, path.extname(entry.filePath)),
+                filePath: entry.filePath,
+                modifiedAt: entry.modifiedAt,
+                firstUserMessage: clampForMeta(light.firstUserMessage),
+                turnCount: light.turnCount,
+                customTitle: light.customTitle,
+                source: entry.source,
+            });
+        } catch {
+            // Skip unreadable or malformed session files.
+        }
+    }
+
+    return metas;
+}
+
+async function listCopilotSessionFiles(): Promise<SessionFileEntry[]> {
     const storageFolder = await resolveWorkspaceStorageFolder();
     if (!storageFolder) {
         return [];
@@ -48,37 +92,65 @@ export async function getSessionsMeta(offset: number, limit: number): Promise<Ch
     }
 
     const files = await listSessionFiles(chatSessionsFolder);
-    if (safeOffset >= files.length) {
+    return files.map((f) => ({ ...f, source: 'copilot' as const }));
+}
+
+async function listClaudeCodeSessionFiles(): Promise<SessionFileEntry[]> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
         return [];
     }
 
-    const page = files.slice(safeOffset, safeOffset + safeLimit);
-    const metas: ChatSessionMeta[] = [];
-
-    for (const filePath of page) {
-        try {
-            const stat = await fs.promises.stat(filePath);
-            const light = await getLightweightMeta(filePath);
-            const firstUserMessage = clampForMeta(light.firstUserMessage);
-
-            metas.push({
-                sessionId: path.basename(filePath, path.extname(filePath)),
-                filePath,
-                modifiedAt: stat.mtimeMs,
-                firstUserMessage,
-                turnCount: light.turnCount,
-                customTitle: light.customTitle,
-            });
-        } catch {
-            // Skip unreadable or malformed session files.
-        }
+    const projectDir = resolveClaudeCodeProjectDir(workspaceFolder.uri.fsPath);
+    if (!exists(projectDir)) {
+        return [];
     }
 
-    return metas;
+    try {
+        const entries = await fs.promises.readdir(projectDir, { withFileTypes: true });
+        const filePaths = entries
+            .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
+            .map((e) => path.join(projectDir, e.name));
+
+        const withStats = await Promise.all(
+            filePaths.map(async (filePath) => {
+                const stat = await fs.promises.stat(filePath);
+                return { filePath, modifiedAt: stat.mtimeMs, source: 'claude-code' as const };
+            })
+        );
+
+        withStats.sort((a, b) => b.modifiedAt - a.modifiedAt);
+        return withStats;
+    } catch {
+        return [];
+    }
+}
+
+function resolveClaudeCodeProjectDir(fsPath: string): string {
+    const slug = fsPath.replace(/[/\\]/g, '-');
+    return path.join(os.homedir(), '.claude', 'projects', slug);
+}
+
+function mergeSortedDesc(a: SessionFileEntry[], b: SessionFileEntry[]): SessionFileEntry[] {
+    const result: SessionFileEntry[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+        if (a[i].modifiedAt >= b[j].modifiedAt) {
+            result.push(a[i++]);
+        } else {
+            result.push(b[j++]);
+        }
+    }
+    while (i < a.length) { result.push(a[i++]); }
+    while (j < b.length) { result.push(b[j++]); }
+    return result;
 }
 
 export async function parseSession(meta: ChatSessionMeta): Promise<ChatSession> {
-    const { turns, fileReferences } = await parseTurnsFromFile(meta.filePath);
+    const { turns, fileReferences } = meta.source === 'claude-code'
+        ? await parseClaudeCodeTurns(meta.filePath)
+        : await parseTurnsFromFile(meta.filePath);
     const firstUser = turns.find((turn) => turn.role === 'user')?.content ?? '';
 
     return {
@@ -88,6 +160,7 @@ export async function parseSession(meta: ChatSessionMeta): Promise<ChatSession> 
         firstUserMessage: firstUser ? clampForMeta(firstUser) : EMPTY_SESSION_LABEL,
         turnCount: turns.length,
         customTitle: meta.customTitle,
+        source: meta.source,
         turns,
         fileReferences,
     };
@@ -197,7 +270,7 @@ function findFirstExisting(candidates: string[]): string | undefined {
     return candidates.find((c) => exists(c));
 }
 
-async function listSessionFiles(chatSessionsFolder: string): Promise<string[]> {
+async function listSessionFiles(chatSessionsFolder: string): Promise<{ filePath: string; modifiedAt: number }[]> {
     const entries = await fs.promises.readdir(chatSessionsFolder, { withFileTypes: true });
     const files = entries
         .filter((entry) => entry.isFile() && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.json')))
@@ -211,7 +284,7 @@ async function listSessionFiles(chatSessionsFolder: string): Promise<string[]> {
     );
 
     withStats.sort((a, b) => b.modifiedAt - a.modifiedAt);
-    return withStats.map((entry) => entry.filePath);
+    return withStats;
 }
 
 async function getLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number; customTitle: string }> {
@@ -711,6 +784,102 @@ function clampForMeta(message: string): string {
     }
 
     return trimmed.length > 80 ? `${trimmed.slice(0, 80).trimEnd()}...` : trimmed;
+}
+
+async function getClaudeCodeLightweightMeta(filePath: string): Promise<{ firstUserMessage: string; turnCount: number; customTitle: string }> {
+    const raw = await fs.promises.readFile(filePath, 'utf8');
+    const lines = raw.split(/\r?\n/);
+    let firstUserMessage = '';
+    let turnCount = 0;
+    let customTitle = '';
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+            continue;
+        }
+
+        try {
+            const record = JSON.parse(trimmed) as Record<string, unknown>;
+            if (record.type === 'ai-title' && typeof record.aiTitle === 'string') {
+                customTitle = record.aiTitle;
+            } else if (record.type === 'user' || record.type === 'assistant') {
+                const text = extractClaudeCodeMessageText(record.message);
+                if (text) {
+                    turnCount++;
+                    if (!firstUserMessage && record.type === 'user') {
+                        firstUserMessage = text;
+                    }
+                }
+            }
+        } catch {
+            // Skip malformed lines.
+        }
+    }
+
+    return { firstUserMessage, turnCount, customTitle };
+}
+
+async function parseClaudeCodeTurns(filePath: string): Promise<ParseResult> {
+    const raw = await fs.promises.readFile(filePath, 'utf8');
+    const lines = raw.split(/\r?\n/);
+    const turns: ChatTurn[] = [];
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+            continue;
+        }
+
+        try {
+            const record = JSON.parse(trimmed) as Record<string, unknown>;
+            if (record.type !== 'user' && record.type !== 'assistant') {
+                continue;
+            }
+
+            const text = extractClaudeCodeMessageText(record.message);
+            if (!text) {
+                continue;
+            }
+
+            const role: 'user' | 'assistant' = record.type === 'user' ? 'user' : 'assistant';
+            const timestamp = typeof record.timestamp === 'string'
+                ? new Date(record.timestamp).getTime()
+                : undefined;
+
+            turns.push({ role, content: text, timestamp });
+        } catch {
+            // Skip malformed lines.
+        }
+    }
+
+    return { turns: dedupeAndSanitizeTurns(turns), fileReferences: [] };
+}
+
+function extractClaudeCodeMessageText(message: unknown): string {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+        return '';
+    }
+
+    const msg = message as Record<string, unknown>;
+    const content = msg.content;
+    if (!Array.isArray(content)) {
+        return '';
+    }
+
+    const chunks: string[] = [];
+    for (const item of content) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            continue;
+        }
+
+        const block = item as Record<string, unknown>;
+        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+            chunks.push(block.text.trim());
+        }
+    }
+
+    return chunks.join('\n').trim();
 }
 
 function trimTrailingSlash(value: string): string {
