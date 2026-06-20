@@ -128,9 +128,10 @@ function toSessionItem(meta: ChatSessionMeta): SessionPickItem {
     const modifiedDate = new Date(meta.modifiedAt);
     const dateString = modifiedDate.toISOString().slice(0, 10);
     const label = meta.customTitle || truncate(meta.firstUserMessage, 60);
+    const icon = meta.source === 'claude-code' ? '$(anthropic)' : '$(copilot)';
 
     return {
-        label: `$(clock) ${label}`,
+        label: `${icon} ${label}`,
         description: formatRelativeTime(meta.modifiedAt),
         detail: `${meta.turnCount} turns · ${dateString}`,
         itemType: 'session',
